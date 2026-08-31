@@ -17,14 +17,14 @@ services:
       - "5432:5432"
     # Gerbang kesiapan: Airflow baru boleh menyala setelah Postgres siap menerima query.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 15s
     volumes:
       - ./postgres/pg_data:/var/lib/postgresql/data # Data persisten (Bind Mount)
-      
+
       # FITUR AUTO-INIT: docker-entrypoint-initdb.d adalah folder sakti bawaan image resmi Docker.
       # File .sql/.sh yang di-mapping ke sini akan DIEKSEKUSI OTOMATIS jika database baru lahir (data masih kosong).
       # Digunakan agar sistem otomatis membuat tabel dan menyuntik 100 data awal tanpa campur tangan manual.
@@ -47,14 +47,14 @@ services:
       - "9000:9000" # Port Native TCP (WAJIB untuk dbt-clickhouse agar bekerja)
     # Gerbang kesiapan: menunggu HTTP port menjawab, bukan sekadar proses hidup.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"]
+      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 20s
     volumes:
       - ./clickhouse/ch_data:/var/lib/clickhouse
-      
+
       # FITUR AUTO-INIT: Sama seperti Postgres, folder bawaan image ClickHouse ini akan otomatis mengeksekusi skrip.
       # Di sini kita memasukkan 01_create_pg_catalog.sh agar ClickHouse otomatis membuat jembatan ke Postgres (Federated Query).
       - ./clickhouse/init:/docker-entrypoint-initdb.d
@@ -86,10 +86,10 @@ services:
       # Tambahkan PYTHONPATH agar folder /opt/airflow dikenali sebagai root package (untuk modul include)
       - PYTHONPATH=/opt/airflow
       # FITUR PERSISTENSI AIRFLOW: Pindahkan lokasi default SQLite ke folder yang di-bind mount
-      
+
       # Agar metadata Airflow (history run DAG, koneksi, dll) tidak hilang saat docker compose down
       # - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN={Rekomendasi menggukan Postgres karena mampu menanganni json seriliaztion dari hasil parsing table dag astornomer cosmos
-      
+
       # TUNING PERFORMA (HEMAT RESOURCE):
       # Karena hanya ada 2 DAG, kita perlambat detak scheduler agar tidak boros CPU laptop.
       # - AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL=120  # Hanya scan file DAG 2 menit sekali (default: 30 detik)
@@ -108,21 +108,28 @@ services:
     # 5. 'airflow standalone' -> Menghidupkan Webserver, Scheduler, dan Triggerer sekaligus.
     # -------------------------------------------------------------------------------------
     command: >
-      bash -c '
-      echo "{\"$${AIRFLOW_ADMIN_USER:-admin}\": \"$${AIRFLOW_ADMIN_PASSWORD:-admin}\"}" > /opt/airflow/simple_auth_manager_passwords.json.generated &&
-      airflow db migrate &&
-      airflow connections delete postgres_default 2>/dev/null || true &&
-      airflow connections add postgres_default --conn-uri "postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/$${POSTGRES_DB}" 2>/dev/null || true &&
-      airflow connections delete clickhouse_default 2>/dev/null || true &&
-      airflow connections add clickhouse_default --conn-uri "clickhouse://$${CLICKHOUSE_USER}:$${CLICKHOUSE_PASSWORD}@clickhouse:9000/$${CLICKHOUSE_DB}" 2>/dev/null || true &&
-      airflow standalone'
+      bash -c ' echo "{\"$${AIRFLOW_ADMIN_USER:-admin}\": \"$${AIRFLOW_ADMIN_PASSWORD:-admin}\"}" > /opt/airflow/simple_auth_manager_passwords.json.generated && airflow db migrate && airflow connections delete postgres_default 2>/dev/null || true && airflow connections add postgres_default --conn-uri "postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/$${POSTGRES_DB}" 2>/dev/null || true && airflow connections delete clickhouse_default 2>/dev/null || true && airflow connections add clickhouse_default --conn-uri "clickhouse://$${CLICKHOUSE_USER}:$${CLICKHOUSE_PASSWORD}@clickhouse:9000/$${CLICKHOUSE_DB}" 2>/dev/null || true && airflow standalone'
     volumes:
       # Mapping agar developer bisa mengedit DAG & dbt dari luar (laptop) tanpa harus masuk ke container
       - ./airflow-dbt/dags:/opt/airflow/dags
       - ./airflow-dbt/dbt:/opt/airflow/dbt
       - ./airflow-dbt/include:/opt/airflow/include
       - ./airflow-dbt/tests:/opt/airflow/tests
-      - ./airflow-dbt/logs:/opt/airflow/logs
       - ./airflow-dbt/plugins:/opt/airflow/plugins
+
+      # LOG AIRFLOW: named volume, BUKAN bind mount.
+      # Alasannya: container Airflow berjalan sebagai uid 50000, sedangkan direktori
+      # hasil 'git clone' dimiliki user host dengan mode 755 -> uid 50000 ditolak menulis
+      # dan Airflow gagal start. Named volume membuat Docker menyalin kepemilikan dari
+      # image (airflow:root), sehingga jalan di mesin mana pun tanpa langkah manual,
+      # dan log tetap bertahan melewati 'docker compose down'.
+      - airflow_logs:/opt/airflow/logs
+
       # Mapping khusus untuk menyimpan file airflow.db (SQLite) agar riwayat DAG tidak hilang
       # - ./airflow-dbt/database:/opt/airflow/database
+
+# ---------------------------------------------------------------------------------------
+# NAMED VOLUMES
+# ---------------------------------------------------------------------------------------
+volumes:
+  airflow_logs:

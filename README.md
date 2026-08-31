@@ -312,10 +312,10 @@ SELECT count() FROM (
 
 All credentials are configurable in `.env`. Database names are `lion_source` (PostgreSQL) and `lion_dwh` (ClickHouse).
 
-Airflow task logs are bind-mounted, so you can read them straight from the host without entering the container:
+Airflow task logs live in a named Docker volume rather than a bind mount, so they survive `docker compose down` and need no permission setup on any machine. Read them from the Airflow UI, or straight from the container:
 
 ```bash
-ls airflow-dbt/logs/dag_id=lion_parcel_dbt_pipeline/
+docker exec lion_airflow ls /opt/airflow/logs/dag_id=lion_parcel_dbt_pipeline/
 ```
 
 ---

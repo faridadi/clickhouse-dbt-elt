@@ -135,9 +135,11 @@ Not all state in this system lives equally long. The table below answers "what d
 | Postgres source data | `./postgres/pg_data` (bind mount) | ✅ | ✅ | Delete the directory to re-seed from scratch |
 | ClickHouse warehouse data | `./clickhouse/ch_data` (bind mount) | ✅ | ✅ | Holds every Bronze/Silver/Gold table |
 | DAG, dbt, include and test code | bind mounts from the host | ✅ | ✅ | The repo is the source of truth, not the container |
-| Airflow task logs | `./airflow-dbt/logs` (bind mount) | ✅ | ✅ | Readable from the host without entering the container |
+| Airflow task logs | `airflow_logs` (named Docker volume) | ✅ | ✅ | Removed only by `docker compose down -v`. See the note below on why this is not a bind mount |
 | **Airflow metadata** (run history, XCom, DAG state) | `/opt/airflow/airflow.db` — **container layer** | ✅ | ❌ | Deliberately not mounted |
 | Connections and admin password | rebuilt at startup | — | — | Idempotent; nothing to restore |
+
+> **Why the Airflow logs are a named volume rather than a bind mount.** The Airflow container runs as uid 50000, while a directory produced by `git clone` belongs to the host user with mode 755. Mounting that directory over `/opt/airflow/logs` leaves uid 50000 unable to write, and Airflow fails to start on a freshly cloned repository — while working fine on the original machine, whose directory happened to be more permissive. A named volume sidesteps the problem entirely: Docker seeds it with the image's own ownership (`airflow:root`), so it works on any machine with no manual `chmod` step. The trade-off is that logs are no longer at a host path; read them through the Airflow UI or with `docker exec`.
 
 **Why is Airflow metadata deliberately non-persistent?** During local development the DAG structure changes aggressively. Airflow stores DAGs in serialised form, and a rapid series of structural changes can leave stale metadata out of sync with the new code. Letting SQLite disappear on `down` means every cycle starts from a clean state. The only thing sacrificed is **execution history** — not data, not code, not configuration, all of which are rebuilt automatically at startup.
 
@@ -265,8 +267,8 @@ docker exec lion_clickhouse clickhouse-client -u lion_user --password lion_passw
   -q "SELECT database, name, engine, total_rows FROM system.tables \
       WHERE database IN ('bronze_lion','silver_lion','gold_lion') ORDER BY database, name"
 
-# Airflow task logs are readable straight from the host (no need to enter the container)
-ls airflow-dbt/logs/
+# Airflow task logs (named volume — read via the UI or straight from the container)
+docker exec lion_airflow ls /opt/airflow/logs/
 
 # FULL reset (destroys the warehouse and the source data, then re-seeds from scratch)
 docker compose down
