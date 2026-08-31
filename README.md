@@ -108,7 +108,7 @@ The row arrives in Bronze as a new version with `deletedAt` populated, and `Repl
 <summary><b>Why the Medallion architecture (Bronze → Silver → Gold)?</b></summary>
 
 | Layer | Materialisation | Responsibility |
-|---|---|---|
+| --- | --- | --- |
 | **Bronze** | `incremental` | Raw one-to-one replica of the source (still camelCase), plus a `load_at` audit column |
 | **Silver** | `view` | Normalisation to snake_case, text standardisation, and the derived `is_deleted` flag |
 | **Gold** | `table` | Business aggregates, ready to consume |
@@ -180,7 +180,7 @@ graph TB
 ## 🧩 Components
 
 | Container | Image | Role | Healthcheck |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `lion_postgres` | `postgres:16-alpine` | OLTP source. Auto-seeds DDL, trigger and 100 rows on first boot | `pg_isready` |
 | `lion_clickhouse` | `clickhouse/clickhouse-server:26.8.1-alpine` | OLAP warehouse plus the `pg_catalog` bridge into PostgreSQL | `GET /ping` |
 | `lion_airflow` | Custom, based on `apache/airflow:3.3.1` | Orchestrator and dbt runtime. Runs api-server, scheduler, triggerer, dag-processor and worker | — |
@@ -192,7 +192,7 @@ Airflow is held back by `depends_on: service_healthy` until both databases are g
 ## 📋 Prerequisites
 
 | Requirement | Minimum | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Docker Engine | 20.10+ | With the Compose v2 plugin (`docker compose`, not `docker-compose`) |
 | Free RAM | ~4 GB | ClickHouse and Airflow run side by side |
 | Disk space | ~5 GB | The Airflow + dbt image is roughly 2.6 GB |
@@ -203,7 +203,7 @@ Airflow is held back by `depends_on: service_healthy` until both databases are g
 ## 🚀 Quick start
 
 ```bash
-git clone <repo-url> && cd project-dbt
+git clone https://github.com/faridadi/clickhouse-dbt-elt.git && clickhouse-dbt-elt
 cp env.example .env
 docker compose up -d --build
 ```
@@ -211,7 +211,7 @@ docker compose up -d --build
 What that command actually does:
 
 | # | Step | Duration |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Build the Airflow + dbt image, then run `dbt parse` to emit a static `manifest.json` | 3–5 min on first run |
 | 2 | PostgreSQL starts; `init.sql` creates the table, trigger and 100 seed rows | ~15 s |
 | 3 | ClickHouse starts; `01_create_pg_catalog.sh` builds the bridge to PostgreSQL | ~20 s |
@@ -219,7 +219,7 @@ What that command actually does:
 | 5 | Airflow runs `db migrate` and registers the `postgres_default` and `clickhouse_default` connections | ~30 s |
 | 6 | `airflow standalone` comes up; the UI is ready on port `8080` | ~30 s |
 
-Open **http://localhost:8080** with `admin` / `admin`. Both DAGs are created **paused** — flip the toggle, or trigger one manually to watch it run immediately.
+Open **<http://localhost:8080>** with `admin` / `admin`. Both DAGs are created **paused** — flip the toggle, or trigger one manually to watch it run immediately.
 
 > ⚠️ **Run `docker compose build` every time you add or rename a dbt model.** The `manifest.json` is produced at build time; editing files through the bind mount alone will not surface new tasks.
 
@@ -232,6 +232,7 @@ Open **http://localhost:8080** with `admin` / `admin`. Both DAGs are created **p
 ```bash
 docker compose ps
 ```
+
 ```
 SERVICE      STATUS
 airflow      Up 2 minutes
@@ -244,6 +245,7 @@ postgres     Up 2 minutes (healthy)
 ```bash
 docker exec -u airflow lion_airflow pytest /opt/airflow/tests/dags/ -q
 ```
+
 ```
 ........................                    [100%]
 24 passed in 2.48s
@@ -256,6 +258,7 @@ docker exec -u airflow lion_airflow bash -c \
   "cd /opt/airflow/dbt/lion_parcel_project && dbt build --profiles-dir . --target prod \
    --log-path /tmp/dbtlogs --target-path /tmp/dbttarget"
 ```
+
 ```
 Done. PASS=30 WARN=0 ERROR=0 SKIP=0 TOTAL=30
 ```
@@ -267,6 +270,7 @@ docker exec lion_clickhouse clickhouse-client -u lion_user --password lion_passw
   SELECT database, name, engine, total_rows FROM system.tables
   WHERE database IN ('bronze_lion','silver_lion','gold_lion') ORDER BY database, name"
 ```
+
 ```
 bronze_lion  bronze_retail_transactions            ReplacingMergeTree   225
 gold_lion    gold_aging_bottleneck_alerts          MergeTree              0
@@ -300,9 +304,9 @@ SELECT count() FROM (
 ## 🔌 Service access reference
 
 | Service | Endpoint | Credentials | Purpose |
-|---|---|---|---|
-| Airflow UI | http://localhost:8080 | `admin` / `admin` | Trigger DAGs, read logs, manage Variables |
-| ClickHouse HTTP | http://localhost:8123 | `lion_user` / `lion_password` | Queries from DBeaver, Metabase or `curl` |
+| --- | --- | --- | --- |
+| Airflow UI | <http://localhost:8080> | `admin` / `admin` | Trigger DAGs, read logs, manage Variables |
+| ClickHouse HTTP | <http://localhost:8123> | `lion_user` / `lion_password` | Queries from DBeaver, Metabase or `curl` |
 | ClickHouse Native | `localhost:9000` | `lion_user` / `lion_password` | **Required** by `dbt-clickhouse` — not the HTTP port |
 | PostgreSQL | `localhost:5432` | `lion_user` / `lion_password` | Inspecting the source table |
 
@@ -323,7 +327,7 @@ The flow is `retail_transactions` → **one Bronze model** → **one Silver mode
 Marts are deliberately split into small, purpose-built units rather than merged into one do-everything table, so each query reads only the columns it needs and `ORDER BY` can match how its audience actually filters.
 
 | Gold mart | Audience | Question it answers | Key filter |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `gold_daily_transaction_valid` | Finance & Operations | "How many valid transactions per day?" | `is_deleted=0` **and** `last_status != 'CANCELLED'` |
 | `gold_daily_transaction_comprehensive` | Management | "What was total parcel movement, cancellations included?" | *(no filter)* |
 | `gold_route_performance_metrics` | Operations Director | "Which route is slowest?" | `last_status='DELIVERED'`, `is_deleted=0` |
@@ -338,6 +342,7 @@ A sample of one mart:
 SELECT pos_origin, pos_destination, total_packages, total_delivered, success_rate_pct
 FROM gold_lion.gold_delivery_success_rate ORDER BY total_packages DESC LIMIT 4;
 ```
+
 ```
 ┌─pos_origin─┬─pos_destination─┬─total_packages─┬─total_delivered─┬─success_rate_pct─┐
 │ Bandung    │ Semarang        │              4 │               2 │               50 │
@@ -356,14 +361,14 @@ The full design — physical DDL, the reasoning behind each ClickHouse optimisat
 Two complementary layers:
 
 | Layer | Tooling | Count | Coverage |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | DAG structure | pytest | 24 | Clean imports, DAG conventions (tags, retries, catchup, timezone, callbacks), Cosmos render completeness, the `check_new_data` gate |
 | Data quality | dbt | 23 | `unique` / `not_null` / `accepted_values` per layer, plus 4 singular tests guarding business invariants |
 
 The four singular tests close gaps that generic tests cannot reach:
 
 | Test | What it catches |
-|---|---|
+| --- | --- |
 | `assert_silver_is_deleted_consistent` | An **inverted** flag — `accepted_values` only guarantees the value is 0 or 1, so a full inversion still passes |
 | `assert_gold_daily_grain_unique` | A broken `GROUP BY` producing duplicate rows that silently inflate dashboard figures |
 | `assert_route_lead_time_valid` | Negative lead times, or `slowest` smaller than `fastest` |
@@ -380,7 +385,7 @@ The structural layer is **static** — it touches neither PostgreSQL nor ClickHo
 `on_failure_callback` and `on_success_callback` are already wired into both DAGs. To switch them on, add two Variables under **Admin ➡️ Variables** in the Airflow UI:
 
 | Key | Value |
-|---|---|
+| --- | --- |
 | `telegram_token` | Bot token from [@BotFather](https://t.me/botfather) |
 | `telegram_chat_id` | Group or personal id, e.g. `-100123456789` |
 
@@ -404,9 +409,11 @@ docker compose build && docker compose up -d
 ```
 
 Confirm with the test written specifically to catch this:
+
 ```bash
 docker exec -u airflow lion_airflow pytest /opt/airflow/tests/dags/ -q -k covers_every_model
 ```
+
 </details>
 
 <details>
@@ -436,6 +443,7 @@ docker exec -u airflow lion_airflow bash -c \
   "cd /opt/airflow/dbt/lion_parcel_project && dbt build --profiles-dir . --target prod \
    --log-path /tmp/dbtlogs --target-path /tmp/dbttarget"
 ```
+
 </details>
 
 <details>
@@ -452,6 +460,7 @@ One of `5432`, `8080`, `8123` or `9000` is already taken — most often a local 
 ```bash
 sudo lsof -i :5432
 ```
+
 Change the port mapping in `compose.yml`, for example to `"5433:5432"`.
 </details>
 
@@ -465,6 +474,7 @@ docker compose down
 sudo rm -rf postgres/pg_data clickhouse/ch_data
 docker compose up -d --build
 ```
+
 Init scripts only run when the data directory is empty, so this deletion is what makes re-seeding happen.
 </details>
 
@@ -475,7 +485,7 @@ Init scripts only run when the data directory is empty, so this deletion is what
 Every item below is a deliberate choice for a local assessment environment, not an oversight.
 
 | Area | Current behaviour | For production |
-|---|---|---|
+| --- | --- | --- |
 | Credentials | Default and guessable (`lion_user`/`lion_password`, `admin`/`admin`) in `.env` | A secret manager such as Vault or AWS Secrets Manager |
 | Port exposure | `5432`, `8123`, `9000` bound to `0.0.0.0` | Stop publishing them; reach the databases via bastion or VPN |
 | `profiles.yml` | Holds the ClickHouse password in plain text inside the repo | Remove it from the repo — Cosmos already uses an Airflow Connection |
@@ -527,7 +537,7 @@ The application design itself needs no change to reach production. The DAGs, dbt
 ## 📚 Further reading
 
 | Document | Contents |
-|---|---|
+| --- | --- |
 | **[DATA_ARCHITECTURE.md](docs/DATA_ARCHITECTURE.md)** | Architecture Decision Records, executed physical DDL, incremental and soft-delete strategy, data dictionary for all five marts, known limitations |
 | **[INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md)** | Runtime topology, boot order and healthchecks, state persistence, the Cosmos build pipeline, security posture, path to production, runbook |
 | **[ORIGINAL_DESIGN.md](docs/ORIGINAL_DESIGN.md)** | The design written before implementation, with a table of every deviation and the reason behind it |
