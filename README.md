@@ -203,7 +203,7 @@ Airflow is held back by `depends_on: service_healthy` until both databases are g
 ## 🚀 Quick start
 
 ```bash
-git clone https://github.com/faridadi/clickhouse-dbt-elt.git && clickhouse-dbt-elt
+git clone https://github.com/faridadi/clickhouse-dbt-elt.git && cd clickhouse-dbt-elt
 cp env.example .env
 docker compose up -d --build
 ```
