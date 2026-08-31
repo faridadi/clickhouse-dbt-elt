@@ -31,6 +31,8 @@ PATH_DBT_PROJECT = f"{os.environ.get('AIRFLOW_HOME', '/opt/airflow')}/dbt/lion_p
 lion_project_config = ProjectConfig(
     dbt_project_path=PATH_DBT_PROJECT,
     manifest_path="/opt/airflow/dbt_manifest/manifest.json",
+    # dbt deps sudah ter-install saat build image; jangan diulang tiap task run.
+    install_dbt_deps=False,
 )
 
 # Profile Config menggunakan ProfileMapping ke Airflow Connection
@@ -47,7 +49,8 @@ lion_profile_config = ProfileConfig(
 
 lion_execution_config = ExecutionConfig(
     dbt_executable_path="dbt",
-    invocation_mode=InvocationMode.SUBPROCESS,
+    # Menggunakan python os, bisa di ganti dengna subproses untuk berjalan di env sendiri
+    invocation_mode=InvocationMode.DBT_RUNNER,
 )
 
 with DAG(
@@ -79,7 +82,7 @@ with DAG(
         sementara Postgres sudah berisi data lama -- kasus itu membuat seluruh data awal
         tidak pernah tertarik, tanpa satu pun error.
         """
-        from airflow.hooks.base import BaseHook
+        from airflow.sdk import BaseHook
         from airflow.providers.postgres.hooks.postgres import PostgresHook
         from clickhouse_driver import Client
 
@@ -144,11 +147,9 @@ with DAG(
         render_config=RenderConfig(
             # Menggunakan manifest.json hasil dari build Dockerfile (Super Cepat!)
             load_method=LoadMode.DBT_MANIFEST,
-            dbt_deps=False,
             emit_datasets=False,
             test_behavior=TestBehavior.AFTER_EACH,
         ),
-        operator_args={"install_deps": False},
     )
 
     end = EmptyOperator(task_id="end")
