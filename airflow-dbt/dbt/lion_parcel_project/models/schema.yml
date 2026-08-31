@@ -1,0 +1,112 @@
+version: 2
+
+models:
+  # ==========================================
+  # BRONZE LAYER (Raw Ingestion)
+  # Fokus: Integritas data mentah dari sumber
+  # ==========================================
+  - name: bronze_retail_transactions
+    description: "Tabel transaksi mentah langsung dari Postgres"
+    columns:
+      - name: id
+        description: "Primary key / Receipt ID"
+        tests:
+          - unique
+          - not_null
+      - name: lastStatus
+        description: "Status transaksi mentah (camelCase)"
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['BOOKED', 'PROCESSING', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED']
+
+  # ==========================================
+  # SILVER LAYER (Cleansed)
+  # Fokus: Validasi hasil pembersihan (Cleanse)
+  # ==========================================
+  - name: silver_retail_transactions_cleansed
+    description: "Tabel transaksi yang sudah dibersihkan dan dinormalisasi (snake_case)"
+    columns:
+      - name: id
+        tests:
+          - unique
+          - not_null
+      - name: last_status
+        description: "Status yang sudah di-UPPERCASE"
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['BOOKED', 'PROCESSING', 'IN_TRANSIT', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED']
+      - name: is_deleted
+        description: "Flag apakah transaksi ini hasil soft-delete"
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+
+  # ==========================================
+  # GOLD LAYER (Mart / Aggregation)
+  # Fokus: Logika bisnis dan hasil agregasi
+  # ==========================================
+  
+  # 1. Model Komprehensif (Menyertakan metrik batal/hapus)
+  - name: gold_daily_transaction_comprehensive
+    description: "Tabel agregasi harian komprehensif, mencakup hitungan seluruh transaksi baik yang berjalan, batal (CANCELLED), maupun dihapus sistem (soft-delete)."
+    columns:
+      - name: transaction_date
+        description: "Tanggal transaksi (tanpa jam)"
+        tests:
+          - not_null
+      - name: total_transactions
+        description: "Jumlah total seluruh transaksi"
+        tests:
+          - not_null
+      - name: total_soft_deleted
+        description: "Jumlah transaksi yang dihapus sistem (soft delete) pada grain ini. Rekap pembatalan bisnis diambil dari baris ber-last_status = 'CANCELLED'."
+        tests:
+          - not_null
+
+  # 2. Model Bersih/Valid (Tanpa data batal/hapus)
+  - name: gold_daily_transaction_valid
+    description: "Tabel agregasi harian BERSIH. Membuang transaksi batal (CANCELLED) dan dihapus (soft-delete). Digunakan untuk perhitungan omzet/keuangan riil."
+    columns:
+      - name: transaction_date
+        description: "Tanggal transaksi (tanpa jam)"
+        tests:
+          - not_null
+      - name: total_valid_transactions
+        description: "Jumlah transaksi bersih/valid per hari/status"
+        tests:
+          - not_null
+  # 3. Model Performa Rute (SLA Lead Time)
+  - name: gold_route_performance_metrics
+    description: "Laporan End-to-End SLA Delivery Time per Rute (Origin ke Destination)"
+    columns:
+      - name: pos_origin
+        tests:
+          - not_null
+      - name: avg_delivery_time_hours
+        description: "Rata-rata waktu pengiriman rute ini (dalam jam)"
+        tests:
+          - not_null
+
+  # 4. Model Deteksi Penumpukan Paket (Bottleneck)
+  - name: gold_aging_bottleneck_alerts
+    description: "Radar paket yang tertahan (stuck) lebih dari 12 jam pada status aktif"
+    columns:
+      - name: total_stuck_packages
+        description: "Jumlah paket yang tersangkut di rute dan status ini"
+        tests:
+          - not_null
+
+  # 5. Model Rasio Keberhasilan (Success Rate)
+  - name: gold_delivery_success_rate
+    description: "Persentase kesuksesan pengiriman dan rasio batal per rute. Murni dihitung dari transaksi sah (tanpa menghitung data soft-delete)."
+    columns:
+      - name: success_rate_pct
+        description: "Persentase sukses (0 - 100)"
+        tests:
+          - not_null

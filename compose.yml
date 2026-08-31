@@ -1,0 +1,128 @@
+# =========================================================================================
+# LION PARCEL - MODERN DATA STACK (MDS) ENVIRONMENT
+# Arsitektur: PostgreSQL (Source) -> Airflow (Orchestrator) -> dbt (Transform) -> ClickHouse (DWH)
+# =========================================================================================
+
+services:
+  # ---------------------------------------------------------------------------------------
+  # 1. POSTGRESQL (OPERATIONAL DATABASE / SOURCE)
+  # Mensimulasikan database transaksional (OLTP) tempat data logistik asli berada.
+  # Diisi menggunakan DAG Faker Airflow (generate_retail_transactions).
+  # ---------------------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: lion_postgres
+    env_file: .env # Membaca user, password, db, dan TZ=Asia/Jakarta
+    ports:
+      - "5432:5432"
+    # Gerbang kesiapan: Airflow baru boleh menyala setelah Postgres siap menerima query.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    volumes:
+      - ./postgres/pg_data:/var/lib/postgresql/data # Data persisten (Bind Mount)
+      
+      # FITUR AUTO-INIT: docker-entrypoint-initdb.d adalah folder sakti bawaan image resmi Docker.
+      # File .sql/.sh yang di-mapping ke sini akan DIEKSEKUSI OTOMATIS jika database baru lahir (data masih kosong).
+      # Digunakan agar sistem otomatis membuat tabel dan menyuntik 100 data awal tanpa campur tangan manual.
+      - ./postgres/postgres_init:/docker-entrypoint-initdb.d
+
+  # ---------------------------------------------------------------------------------------
+  # 2. CLICKHOUSE (DATA WAREHOUSE / ANALYTICS ENGINE)
+  # Berfungsi sebagai Data Warehouse Kolumnar berkecepatan tinggi (OLAP).
+  # dbt akan memanipulasi data di sini menggunakan arsitektur Medallion (Bronze/Silver/Gold).
+  # ---------------------------------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.1-alpine
+    container_name: lion_clickhouse
+    env_file: .env
+    environment:
+      # Mengaktifkan manajemen akses bawaan ClickHouse (untuk autentikasi user dbt)
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    ports:
+      - "8123:8123" # Port HTTP (Opsional, untuk monitoring/UI eksternal)
+      - "9000:9000" # Port Native TCP (WAJIB untuk dbt-clickhouse agar bekerja)
+    # Gerbang kesiapan: menunggu HTTP port menjawab, bukan sekadar proses hidup.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    volumes:
+      - ./clickhouse/ch_data:/var/lib/clickhouse
+      
+      # FITUR AUTO-INIT: Sama seperti Postgres, folder bawaan image ClickHouse ini akan otomatis mengeksekusi skrip.
+      # Di sini kita memasukkan 01_create_pg_catalog.sh agar ClickHouse otomatis membuat jembatan ke Postgres (Federated Query).
+      - ./clickhouse/init:/docker-entrypoint-initdb.d
+
+  # ---------------------------------------------------------------------------------------
+  # 3. APACHE AIRFLOW 3 (ORCHESTRATOR & DBT RUNTIME)
+  # Bertindak sebagai konduktor/scheduler.
+  # Menggunakan ekstensi Cosmos untuk merender project dbt menjadi DAG task secara dinamis.
+  # Bersifat Self-Bootstrapping (Membangun DB dan koneksi dari nol secara otomatis).
+  # ---------------------------------------------------------------------------------------
+  airflow:
+    build: ./airflow-dbt
+    container_name: lion_airflow
+    env_file: .env
+    # Tanpa ini, Airflow bisa menyala sebelum warehouse siap dan run pertama gagal
+    # (sembuh di retry, tapi menimbulkan alert Telegram palsu setiap 'compose up').
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      # Konfigurasi AuthManager sederhana untuk Airflow 3
+      - AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS=${AIRFLOW_ADMIN_USER:-admin}:${AIRFLOW_ADMIN_ROLE:-admin}
+      - AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS=False
+      # Sinkronisasi zona waktu ke WIB (Jakarta) agar sejalan dengan database Postgres & ClickHouse
+      - AIRFLOW__CORE__DEFAULT_TIMEZONE=Asia/Jakarta
+      # Tambahkan PYTHONPATH agar folder /opt/airflow dikenali sebagai root package (untuk modul include)
+      - PYTHONPATH=/opt/airflow
+      # FITUR PERSISTENSI AIRFLOW: Pindahkan lokasi default SQLite ke folder yang di-bind mount
+      
+      # Agar metadata Airflow (history run DAG, koneksi, dll) tidak hilang saat docker compose down
+      # - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN={Rekomendasi menggukan Postgres karena mampu menanganni json seriliaztion dari hasil parsing table dag astornomer cosmos
+      
+      # TUNING PERFORMA (HEMAT RESOURCE):
+      # Karena hanya ada 2 DAG, kita perlambat detak scheduler agar tidak boros CPU laptop.
+      # - AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL=120  # Hanya scan file DAG 2 menit sekali (default: 30 detik)
+      # - AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL=300      # Hanya cari DAG baru 5 menit sekali (default: 5 menit)
+      # - AIRFLOW__CORE__PARALLELISM=2                       # Maksimal total task berjalan serentak
+      - AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG=${AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG} # Maksimal task per DAG berjalan serentak
+    ports:
+      - "8080:8080" # UI Airflow
+    # -------------------------------------------------------------------------------------
+    # STARTUP SCRIPT AIRFLOW
+    # Skrip bash di bawah ini akan dijalankan secara berurutan setiap kali container menyala:
+    # 1. Membuat file password untuk AuthManager (akses login UI Airflow).
+    # 2. 'airflow db migrate' -> Inisialisasi & migrasi tabel metadata Airflow di SQLite.
+    # 3. Menghapus koneksi lama & mendaftarkan koneksi postgres_default secara otomatis.
+    # 4. Menghapus koneksi lama & mendaftarkan koneksi clickhouse_default secara otomatis.
+    # 5. 'airflow standalone' -> Menghidupkan Webserver, Scheduler, dan Triggerer sekaligus.
+    # -------------------------------------------------------------------------------------
+    command: >
+      bash -c '
+      echo "{\"$${AIRFLOW_ADMIN_USER:-admin}\": \"$${AIRFLOW_ADMIN_PASSWORD:-admin}\"}" > /opt/airflow/simple_auth_manager_passwords.json.generated &&
+      airflow db migrate &&
+      airflow connections delete postgres_default 2>/dev/null || true &&
+      airflow connections add postgres_default --conn-uri "postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/$${POSTGRES_DB}" 2>/dev/null || true &&
+      airflow connections delete clickhouse_default 2>/dev/null || true &&
+      airflow connections add clickhouse_default --conn-uri "clickhouse://$${CLICKHOUSE_USER}:$${CLICKHOUSE_PASSWORD}@clickhouse:9000/$${CLICKHOUSE_DB}" 2>/dev/null || true &&
+      airflow standalone'
+    volumes:
+      # Mapping agar developer bisa mengedit DAG & dbt dari luar (laptop) tanpa harus masuk ke container
+      - ./airflow-dbt/dags:/opt/airflow/dags
+      - ./airflow-dbt/dbt:/opt/airflow/dbt
+      - ./airflow-dbt/include:/opt/airflow/include
+      - ./airflow-dbt/tests:/opt/airflow/tests
+      - ./airflow-dbt/logs:/opt/airflow/logs
+      - ./airflow-dbt/plugins:/opt/airflow/plugins
+      # Mapping khusus untuk menyimpan file airflow.db (SQLite) agar riwayat DAG tidak hilang
+      # - ./airflow-dbt/database:/opt/airflow/database

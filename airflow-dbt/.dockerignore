@@ -1,0 +1,16 @@
+# Build context compose.yml adalah ./airflow-dbt, sehingga .dockerignore di root
+# TIDAK dibaca Docker. File inilah yang berlaku untuk image Airflow.
+
+# Artefak run dbt di host -- jangan sampai terpanggang ke image.
+# manifest.json yang dipakai Cosmos dibuat ulang saat build di /opt/airflow/dbt_manifest.
+dbt/**/target/
+dbt/**/logs/
+dbt/**/dbt_packages/
+dbt/**/.user.yml
+
+# Kredensial & sampah lokal
+.env
+logs/
+__pycache__/
+**/__pycache__/
+*.pyc

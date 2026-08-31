@@ -1,0 +1,22 @@
+version: 2
+
+sources:
+  - name: postgres_source
+    description: "Database operasional PostgreSQL (via Clickhouse Catalog)"
+    schema: pg_catalog
+    tables:
+      - name: retail_transactions
+        description: "Tabel transaksi retail mentah"
+        columns:
+          - name: id
+            description: "Primary key / Receipt ID"
+          - name: customerId
+            description: "ID Pelanggan"
+          - name: lastStatus
+            description: "Status transaksi (BOOKED, PROCESSING, IN_TRANSIT, OUT_FOR_DELIVERY, DELIVERED, CANCELLED)"
+          - name: createdAt
+            description: "Waktu transaksi dibuat"
+          - name: updatedAt
+            description: "Waktu transaksi diupdate terakhir"
+          - name: deletedAt
+            description: "Waktu transaksi dihapus (soft delete)"

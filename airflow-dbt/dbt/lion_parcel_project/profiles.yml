@@ -1,0 +1,11 @@
+lion_dwh:
+  target: prod
+  outputs:
+    prod:
+      type: clickhouse
+      schema: lion_parcel_base
+      host: clickhouse
+      port: 9000
+      user: lion_user
+      password: lion_password
+      secure: False

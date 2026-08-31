@@ -1,0 +1,7 @@
+astronomer-cosmos==1.15.1
+dbt-core==1.12.3
+dbt-clickhouse==1.9.3
+Faker==40.37.0
+apache-airflow-providers-postgres==7.0.2
+apache-airflow-providers-telegram==4.9.6
+pytest==8.4.2  # menjalankan tests/dags/ (uji integritas DAG)
