@@ -69,29 +69,64 @@ with DAG(
 
     start = EmptyOperator(task_id="start")
 
-    def _check_new_data(data_interval_start, dag_run, **kwargs):
-        from airflow.providers.postgres.hooks.postgres import PostgresHook
-        
-        # Jika DAG di-trigger manual dari UI, bypass pengecekan agar tidak ter-skip
-        if dag_run.run_type == "manual":
-            print("DAG dijalankan secara manual (Trigger DAG). Bypass pengecekan waktu (SKIP = FALSE).")
-            return True
-            
-        hook = PostgresHook(postgres_conn_id="postgres_default")
-        sql = """
-            SELECT 1 
-            FROM retail_transactions 
-            WHERE "updatedAt" >= %s 
-            LIMIT 1
+    def _check_new_data(dag_run, **kwargs):
+        """Gerbang efisiensi: jalankan dbt hanya bila ada baris yang belum mendarat di Bronze.
+
+        Pembandingnya adalah watermark warehouse (max updatedAt di Bronze), BUKAN awal
+        window jadwal. Membandingkan ke window jadwal menanyakan hal yang keliru: ia
+        bertanya "adakah data baru dalam satu jam terakhir?", padahal yang relevan adalah
+        "adakah data yang belum saya punya?". Keduanya berbeda ketika Bronze masih kosong
+        sementara Postgres sudah berisi data lama -- kasus itu membuat seluruh data awal
+        tidak pernah tertarik, tanpa satu pun error.
         """
-        # Kita cek apakah ada data dengan updatedAt >= batas awal jadwal eksekusi
-        records = hook.get_records(sql, parameters=(data_interval_start,))
-        
+        from airflow.hooks.base import BaseHook
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+        from clickhouse_driver import Client
+
+        # Trigger manual dari UI selalu dijalankan (untuk demo, backfill, dan debugging).
+        if dag_run.run_type == "manual":
+            print("Trigger manual: pengecekan dilewati, pipeline tetap dijalankan.")
+            return True
+
+        conn = BaseHook.get_connection("clickhouse_default")
+        client = Client(
+            host=conn.host,
+            port=conn.port or 9000,
+            user=conn.login,
+            password=conn.password or "",
+            database=conn.schema or "default",
+        )
+        try:
+            watermark = client.execute(
+                "SELECT max(updatedAt) FROM bronze_lion.bronze_retail_transactions"
+            )[0][0]
+        except Exception as exc:
+            # Tabel Bronze belum ada = run pertama. Wajib jalan agar full load terjadi.
+            print(f"Bronze belum tersedia ({type(exc).__name__}). Menjalankan full load.")
+            return True
+        finally:
+            client.disconnect()
+
+        if watermark is None:
+            print("Bronze kosong. Menjalankan full load.")
+            return True
+
+        # Sengaja memakai '>' (bukan '>='): pertanyaannya adalah "adakah yang LEBIH BARU
+        # dari yang sudah saya punya?". Dengan '>=' gerbang tidak akan pernah men-skip,
+        # karena baris di watermark itu sendiri selalu ada. Baris yang ter-commit pada
+        # milidetik yang sama persis tetap aman: model Bronze memakai '>=' sehingga
+        # menarik ulang batas tersebut pada run berikutnya.
+        hook = PostgresHook(postgres_conn_id="postgres_default")
+        records = hook.get_records(
+            'SELECT 1 FROM retail_transactions WHERE "updatedAt" > %s LIMIT 1',
+            parameters=(watermark,),
+        )
+
         if not records:
-            print("Tidak ada data baru di PostgreSQL. Melewati eksekusi dbt (SKIP).")
+            print(f"Tidak ada baris lebih baru dari watermark {watermark}. SKIP.")
             return False
-            
-        print("Data baru ditemukan! Melanjutkan eksekusi dbt.")
+
+        print(f"Ada baris lebih baru dari watermark {watermark}. Menjalankan dbt.")
         return True
 
     from airflow.providers.standard.operators.python import ShortCircuitOperator

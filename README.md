@@ -168,7 +168,7 @@ graph TB
 
 1. **Minute :55** — the `generate_retail_transactions` DAG simulates the operational system: it inserts 10–50 new `BOOKED` transactions, advances active ones through the delivery funnel, cancels a fraction of them, and soft-deletes a fraction of those already `DELIVERED`.
 2. **Minute :00** — the `lion_parcel_dbt_pipeline` DAG starts. The five-minute offset guarantees every source transaction has committed before aggregation begins.
-3. **The gate** — `check_new_data` asks PostgreSQL whether any row has `updatedAt >= data_interval_start`. If not, the whole pipeline is skipped, so a quiet hour never spends compute rebuilding five unchanged tables.
+3. **The gate** — `check_new_data` reads the warehouse watermark (`max(updatedAt)` in Bronze) and asks PostgreSQL whether any row is strictly newer. If not, the whole pipeline is skipped, so a quiet hour never spends compute rebuilding five unchanged tables. When Bronze is empty or missing, the gate always runs, so the very first load can never be skipped.
 4. **Bronze** — dbt pulls only the changed rows through `pg_catalog` and writes them into a `ReplacingMergeTree` that collapses old and new versions on `updatedAt`.
 5. **Bronze tests** — if a duplicate `id` or an unexpected status appears, the pipeline stops here. Silver and Gold do **not** run.
 6. **Silver** — the view cleans up naming and derives the `is_deleted` flag.
@@ -419,7 +419,7 @@ docker exec -u airflow lion_airflow pytest /opt/airflow/tests/dags/ -q -k covers
 <details>
 <summary><b>The DAG goes straight to <i>skipped</i> after <code>check_new_data</code></b></summary>
 
-This is **correct behaviour**, not a failure. The `ShortCircuitOperator` found no rows with `updatedAt >= data_interval_start`, so it skips the pipeline rather than rebuilding five unchanged tables.
+This is **correct behaviour**, not a failure. The `ShortCircuitOperator` compared PostgreSQL against the Bronze watermark, found nothing newer, and skipped the pipeline rather than rebuilding five unchanged tables.
 
 To bypass it, trigger the DAG manually from the UI — manual runs deliberately skip this check.
 </details>

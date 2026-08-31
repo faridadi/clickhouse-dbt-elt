@@ -442,7 +442,11 @@ The five-minute offset ensures all source transactions have committed before agg
 start → check_new_data → dbt_process (Cosmos TaskGroup) → end
 ```
 
-**`check_new_data` (a `ShortCircuitOperator`)** asks PostgreSQL directly whether any row has `updatedAt >= data_interval_start`. If not, the entire dbt TaskGroup is skipped — a quiet hour does not spend compute rebuilding five Gold tables that have not changed. Manual triggers from the UI deliberately bypass this check so demos and backfills are not skipped along with it.
+**`check_new_data` (a `ShortCircuitOperator`)** reads the warehouse watermark — `max(updatedAt)` in Bronze — and asks PostgreSQL whether any row is strictly newer. If not, the entire dbt TaskGroup is skipped, so a quiet hour does not spend compute rebuilding five unchanged Gold tables. Manual triggers from the UI deliberately bypass the check so demos and backfills are never skipped.
+
+The comparison deliberately targets the **warehouse watermark rather than the schedule window**. Asking "did anything change in the last hour?" is a different question from "is anything missing from the warehouse?", and the two diverge exactly when Bronze is empty while PostgreSQL already holds older rows — a fresh clone, or a warehouse reset. In that situation a window-based gate skips forever and the initial load never happens, silently and without error. Anchoring on the watermark makes the gate ask the same question the Bronze model itself asks.
+
+The gate uses `>` while the model uses `>=`. That asymmetry is intentional: with `>=` the gate could never skip, because the boundary row always exists. A row committed in the same millisecond as the watermark is still safe, because the model re-reads that boundary with `>=` on its next run.
 
 **`DbtTaskGroup` (Astronomer Cosmos)** turns every dbt model and every dbt test into a separate Airflow task, so failures are visible at model level rather than inside one opaque task called "dbt run".
 
